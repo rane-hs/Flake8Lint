@@ -77,8 +77,12 @@ def checkPath(filename, reporter=None):
         with open(filename, 'U') as f:
             codestr = f.read() + '\n'
     except UnicodeError:
-        reporter.unexpectedError(filename, 'problem decoding source')
-        return 1
+        try:
+            with open(filename, 'U', encoding='utf-8') as f:
+                codestr = f.read() + '\n'
+        except UnicodeError:
+            reporter.unexpectedError(filename, 'problem decoding source')
+            return 1
     except IOError:
         msg = sys.exc_info()[1]
         reporter.unexpectedError(filename, msg.args[1])
