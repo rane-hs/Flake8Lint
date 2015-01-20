@@ -1,26 +1,31 @@
 # -*- coding: utf-8 -*-
 """
-Flake8Lint: Sublime Text 2 plugin.
+Flake8Lint: Sublime Text plugin.
 Check Python files with flake8 (PEP8, pyflake and mccabe)
 """
 import os
 import sys
-from fnmatch import fnmatch
 
 import sublime
 import sublime_plugin
 
 try:
+    from .color_theme import update_color_scheme
+    from .helpers import (
+        filename_match, get_current_line, skip_line_lint, view_is_preview
+    )
     from .lint import lint, lint_external, skip_file, load_flake8_config
 except (ValueError, SystemError):
-    from lint import lint, lint_external, skip_file, load_flake8_config  # noqa
+    from color_theme import update_color_scheme
+    from helpers import (
+        filename_match, get_current_line, skip_line_lint, view_is_preview
+    )
+    from lint import lint, lint_external, skip_file, load_flake8_config
 
 
-settings = None
-debug_enabled = False
 PROJECT_SETTINGS_KEYS = (
-    'python_interpreter', 'builtins', 'pyflakes', 'pep8', 'complexity',
-    'pep8_max_line_length', 'select', 'ignore', 'ignore_files',
+    'python_interpreter', 'builtins', 'pyflakes', 'pep8', 'naming',
+    'complexity', 'pep8_max_line_length', 'select', 'ignore', 'ignore_files',
     'use_flake8_global_config', 'use_flake8_project_config',
 )
 FLAKE8_SETTINGS_KEYS = (
@@ -28,65 +33,72 @@ FLAKE8_SETTINGS_KEYS = (
 )
 
 ERRORS_IN_VIEWS = {}
-FLAKE_DIR = os.path.dirname(os.path.abspath(__file__))
+PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+
+ERROR_LEVELS = ('warning', 'error', 'critical')
+
+MARK_TYPES = ('dot', 'circle', 'bookmark', 'cross')
+MARK_THEMES = ('alpha', 'bright', 'dark', 'hard', 'simple')
+
+MARK_THEMES_PATHS = ['Packages', os.path.basename(PLUGIN_DIR), 'gutter-themes']
+if int(sublime.version()) < 3014:
+    MARK_THEMES_PATHS = [os.path.pardir, os.path.pardir] + MARK_THEMES_PATHS
+
+# ST does not expect platform specific paths here, but only
+# forward-slash separated paths relative to "Packages"
+MARK_THEMES_DIR = '/'.join(MARK_THEMES_PATHS)
 
 
-def debug(msg):
+settings = None
+debug_enabled = False
+
+
+def log(msg, level=None):
     """
-    Print debug info to ST python console if debug is enabled.
+    Log to ST python console.
+
+    If log level 'debug' (or None) print only if debug setting is enabled.
     """
-    if not debug_enabled:
+    if level is None:
+        level = 'debug'
+
+    if level == 'debug' and not debug_enabled:
         return
-    print("[Flake8Lint DEBUG] {0}".format(msg))
+
+    print("[Flake8Lint {0}] {1}".format(level.upper(), msg))
 
 
-def plugin_loaded():
+def get_view_settings(view):
     """
-    Callback for 'plugin was loaded' event.
-    Load settings.
+    Returns dict with view settings.
+
+    Settings are taken from (see README for more info):
+    - ST plugin settings (global, user, project)
+    - flake8 settings (global, project)
     """
-    global settings
-    global debug_enabled
-    settings = sublime.load_settings("Flake8Lint.sublime-settings")
-    if settings.get('debug', False):
-        debug_enabled = True
-        debug("plugin was loaded")
+    result_settings = {}
 
+    # get settings from global (user) plugin settings
+    view_settings = view.settings().get('flake8lint') or {}
+    for param in PROJECT_SETTINGS_KEYS:
+        if param in view_settings:
+            result_settings[param] = view_settings.get(param)
+        elif settings.has(param):
+            result_settings[param] = settings.get(param)
 
-# Backwards compatibility with Sublime 2
-# sublime.version isn't available at module import time in Sublime 3
-if sys.version_info[0] == 2:
-    plugin_loaded()
+    global_config = result_settings.get('use_flake8_global_config', False)
+    project_config = result_settings.get('use_flake8_project_config', False)
 
+    if global_config or project_config:
+        filename = os.path.abspath(view.file_name())
 
-def skip_line(line):
-    """
-    Check if we need to skip line check.
-    Line must ends with '# noqa' or '# NOQA' comment.
-    """
-    def _noqa(line):
-        return line.strip().lower().endswith('# noqa')
-    skip = _noqa(line)
-    if not skip:
-        i = line.rfind(' #')
-        skip = _noqa(line[:i]) if i > 0 else False
-    if skip:
-        debug("skip line '{0}'".format(line))
-    return skip
+        flake8_config = load_flake8_config(filename, global_config,
+                                           project_config)
+        for param in FLAKE8_SETTINGS_KEYS:
+            if param in flake8_config:
+                result_settings[param] = flake8_config.get(param)
 
-
-def get_current_line(view):
-    """
-    Get current line (line under cursor).
-    """
-    # get view selection (exit if no selection)
-    view_selection = view.sel()
-    if not view_selection:
-        return None
-
-    point = view_selection[0].end()
-    position = view.rowcol(point)
-    return position[0]
+    return result_settings
 
 
 def clear_statusbar(view):
@@ -123,47 +135,94 @@ def update_statusbar(view):
         clear_statusbar(view)
 
 
-def get_view_settings(view):
+def set_ruler_guide(view):
     """
-    Returns dict with view settings.
-
-    Settings are taken from (see README for more info):
-    - ST plugin settings (global, user, project)
-    - flake8 settings (global, project)
+    Set view ruler guide.
     """
-    result_settings = {}
+    if not view.match_selector(0, 'source.python'):
+        return
 
-    # get settings from global (user) plugin settings
-    view_settings = view.settings().get('flake8lint') or {}
-    for param in PROJECT_SETTINGS_KEYS:
-        if param in view_settings:
-            result_settings[param] = view_settings.get(param)
-        elif settings.has(param):
-            result_settings[param] = settings.get(param)
+    log("set view ruler guide")
 
-    global_config = result_settings.get('use_flake8_global_config', False)
-    project_config = result_settings.get('use_flake8_project_config', False)
+    view_settings = get_view_settings(view)
+    max_line_length = view_settings.get('pep8_max_line_length', 79)
 
-    if global_config or project_config:
-        filename = os.path.abspath(view.file_name())
+    try:
+        max_line_length = int(max_line_length)
+    except (TypeError, ValueError):
+        log("can't parse 'pep8_max_line_length' setting", level='error')
+        max_line_length = 79
 
-        flake8_config = load_flake8_config(filename, global_config,
-                                           project_config)
-        for param in FLAKE8_SETTINGS_KEYS:
-            if param in flake8_config:
-                result_settings[param] = flake8_config.get(param)
-
-    return result_settings
+    view.settings().set('rulers', [max_line_length])
+    log("view ruler guide is set to {0}".format(max_line_length))
 
 
-def filename_match(filename, patterns):
+def wait_for_file_load(view, ruler_is_set=False):
     """
-    Returns True if filename is matched with patterns.
+    Set rullers if needed and run file lint after file was loaded if needed.
     """
-    for path_part in filename.split(os.path.sep):
-        if any(fnmatch(path_part, pattern) for pattern in patterns):
-            return True
-    return False
+    if not ruler_is_set:
+        if settings.get('set_ruler_guide', False):
+            set_ruler_guide(view)
+        else:
+            log("do not set ruler guide due to plugin settings")
+
+    active_window = sublime.active_window()
+    if view_is_preview(active_window, view):
+        sublime.set_timeout(lambda: wait_for_file_load(view, True), 300)
+        return
+
+    if view.is_scratch():
+        log("skip lint because view is scratch")
+        return  # do not lint scratch views
+
+    if settings.get('lint_on_load', False):
+        log("run lint by 'on_load' hook")
+        view.run_command("flake8_lint")
+    else:
+        log("skip lint by 'on_load' hook due to plugin settings")
+
+
+def on_file_load(view=None, retry=False):
+    """
+    Run actions on file load.
+    Wait until file was finally loaded and run actions if needed.
+    """
+    we_need_to_wait_for_file_load = (
+        settings.get('set_ruler_guide', False)
+        or
+        settings.get('lint_on_load', False)
+    )
+    if not we_need_to_wait_for_file_load:
+        return
+
+    log("wait until file was loaded")
+    if not retry:  # first run - wait a little bit
+        sublime.set_timeout(lambda: on_file_load(view, True), 100)
+        return
+
+    if view is None:
+        window = sublime.active_window()
+        if not window:
+            return
+
+        view = window.active_view()
+        if not view:
+            return
+
+    if view.is_loading():  # view is still running - wait again
+        sublime.set_timeout(lambda: on_file_load(view, True), 100)
+        return
+
+    if view.window() is None:  # view window is not initialized - wait...
+        sublime.set_timeout(lambda: on_file_load(view, True), 100)
+        return
+
+    if view.window().active_view().id() != view.id():
+        log("view is not active anymore, forget about lint")
+        return  # not active anymore, don't lint it!
+
+    wait_for_file_load(view)
 
 
 class Flake8NextErrorCommand(sublime_plugin.TextCommand):
@@ -174,11 +233,11 @@ class Flake8NextErrorCommand(sublime_plugin.TextCommand):
         """
         Jump to next lint error.
         """
-        debug("jump to next lint error")
+        log("jump to next lint error")
 
         view_errors = ERRORS_IN_VIEWS.get(self.view.id())
         if not view_errors:
-            debug("no view errors found")
+            log("no view errors found")
             return
 
         # get view selection (exit if no selection)
@@ -198,7 +257,7 @@ class Flake8NextErrorCommand(sublime_plugin.TextCommand):
                 next_line = error_line
                 break
 
-        debug("jump to line {0}".format(next_line))
+        log("jump to line {0}".format(next_line))
 
         point = self.view.text_point(next_line, 0)
         self.view.sel().clear()
@@ -214,30 +273,31 @@ class Flake8LintCommand(sublime_plugin.TextCommand):
         """
         Run flake8 lint.
         """
-        debug("run flake8 lint")
+        log("run flake8 lint")
         # check if active view contains file
         filename = self.view.file_name()
         if not filename:
-            debug("skip view: filename is empty")
+            log("skip view: filename is empty")
             return
 
         filename = os.path.abspath(filename)
 
         # check only Python files
         if not self.view.match_selector(0, 'source.python'):
-            debug("skip file: view source type is not 'python'")
+            log("skip file: view source type is not 'python'")
             return
 
         # skip file check if 'noqa' for whole file is set
         if skip_file(filename):
-            debug("skip file: 'noqa' is set")
+            log("skip file: 'noqa' is set")
             return
 
         # we need to always clear regions. three situations here:
         # - we need to clear regions with fixed previous errors
         # - is user will turn off 'highlight' in settings and then run lint
         # - user adds file with errors to 'ignore_files' list
-        self.view.erase_regions('flake8-errors')
+        for level in ERROR_LEVELS:
+            self.view.erase_regions('flake8lint-{0}'.format(level))
 
         # we need to always erase status too. same situations.
         self.view.erase_status('flake8-tip')
@@ -247,7 +307,7 @@ class Flake8LintCommand(sublime_plugin.TextCommand):
 
         # skip files by pattern
         patterns = view_settings.get('ignore_files')
-        debug("ignore file patterns: {0}".format(patterns))
+        log("ignore file patterns: {0}".format(patterns))
         if patterns:
             # add file basename to check list
             paths = [os.path.basename(filename)]
@@ -271,26 +331,26 @@ class Flake8LintCommand(sublime_plugin.TextCommand):
 
         # save file if dirty
         if self.view.is_dirty():
-            debug("save file before lint, because view is 'dirty'")
+            log("save file before lint, because view is 'dirty'")
             self.view.run_command('save')
 
         # try to get interpreter
         interpreter = view_settings.get('python_interpreter', 'auto')
-        debug("python interpreter: {0}".format(interpreter))
+        log("python interpreter: {0}".format(interpreter))
 
         if not interpreter or interpreter == 'internal':
-            # if interpreter is Sublime Text 2 internal python - lint file
-            debug("interpreter is internal")
+            # if interpreter is Sublime Text internal python - lint file
+            log("interpreter is internal")
             self.errors_list = lint(filename, view_settings)
         else:
             # else - check interpreter
-            debug("interpreter is external")
+            log("interpreter is external")
             if interpreter == 'auto':
                 if os.name == 'nt':
                     interpreter = 'pythonw'
                 else:
                     interpreter = 'python'
-                debug("guess interpreter: '{0}'".format(interpreter))
+                log("guess interpreter: '{0}'".format(interpreter))
             elif not os.path.exists(interpreter):
                 sublime.error_message(
                     "Python Flake8 Lint error:\n"
@@ -298,14 +358,14 @@ class Flake8LintCommand(sublime_plugin.TextCommand):
                 )
 
             # build linter path for Packages Manager installation
-            linter = os.path.join(FLAKE_DIR, 'lint.py')
-            debug("linter file: {0}".format(linter))
+            linter = os.path.join(PLUGIN_DIR, 'lint.py')
+            log("linter file: {0}".format(linter))
 
             # build linter path for installation from git
             if not os.path.exists(linter):
                 linter = os.path.join(
                     sublime.packages_path(), 'Python Flake8 Lint', 'lint.py')
-                debug("linter is not exists, try this: {0}".format(linter))
+                log("linter is not exists, try this: {0}".format(linter))
 
             if not os.path.exists(linter):
                 sublime.error_message(
@@ -314,22 +374,45 @@ class Flake8LintCommand(sublime_plugin.TextCommand):
                 )
 
             # and lint file in subprocess
-            debug("interpreter is external")
+            log("interpreter is external")
             self.errors_list = lint_external(filename, view_settings,
                                              interpreter, linter)
 
-        debug("lint errors found: {0}".format(len(self.errors_list)))
+        log("lint errors found: {0}".format(len(self.errors_list)))
         # show errors
         if self.errors_list:
             self.show_errors(view_settings)
         elif settings.get('report_on_success', False):
             sublime.message_dialog('Flake8 Lint: SUCCESS')
 
+    def get_gutter_mark(self):
+        """
+        Returns gutter mark icon or empty string if marks are disabled.
+        """
+        mark_type = str(settings.get('gutter_marks', ''))
+
+        if mark_type in MARK_TYPES:
+            return mark_type
+
+        if mark_type.startswith('theme-'):
+            theme = mark_type[6:]
+            if theme in MARK_THEMES:
+                # ST does not expect platform specific paths here, but only
+                # forward-slash separated paths relative to "Packages"
+                mark = '/'.join([MARK_THEMES_DIR, '{0}-{{0}}'.format(theme)])
+                if int(sublime.version()) >= 3014:
+                    mark += '.png'
+                return mark
+            else:
+                log("unknown gutter mark theme: '{0}'".format(mark_type))
+
+        return ''
+
     def show_errors(self, view_settings):
         """
         Show all errors.
         """
-        debug("show flake8 lint errors")
+        log("show flake8 lint errors")
         errors_to_show = []
 
         # get error report settings
@@ -338,21 +421,19 @@ class Flake8LintCommand(sublime_plugin.TextCommand):
         is_highlight = settings.get('highlight', False)
         is_popup = settings.get('popup', True)
 
-        mark = settings.get('gutter_marks', '')
-        if mark not in ('', 'dot', 'circle', 'bookmark', 'cross'):
-            mark = ''
+        gutter_mark = self.get_gutter_mark()
 
-        debug("'select' setting: {0}".format(select))
-        debug("'ignore' setting: {0}".format(ignore))
-        debug("'is_highlight' setting: {0}".format(is_highlight))
-        debug("'is_popup' setting: {0}".format(is_popup))
+        log("'select' setting: {0}".format(select))
+        log("'ignore' setting: {0}".format(ignore))
+        log("'is_highlight' setting: {0}".format(is_highlight))
+        log("'is_popup' setting: {0}".format(is_popup))
 
-        regions = []
+        regions = {'critical': [], 'error': [], 'warning': []}
         view_errors = {}
         errors_list_filtered = []
 
         for e in self.errors_list:
-            debug("error to show: {0}".format(e))
+            log("error to show: {0}".format(e))
             current_line = e[0] - 1
             error_text = e[2]
 
@@ -363,8 +444,8 @@ class Flake8LintCommand(sublime_plugin.TextCommand):
             line_text = full_line_text.strip()
 
             # skip line if 'noqa' defined
-            if skip_line(line_text):
-                debug("skip error due to 'noqa' comment")
+            if skip_line_lint(line_text):
+                log("skip error due to 'noqa' comment")
                 continue
 
             # parse error line to get error code
@@ -372,12 +453,12 @@ class Flake8LintCommand(sublime_plugin.TextCommand):
 
             # check if user has a setting for select only errors to show
             if select and not [c for c in select if code.startswith(c)]:
-                debug("error does not fit in 'select' settings")
+                log("error does not fit in 'select' settings")
                 continue
 
             # check if user has a setting for ignore some errors
             if ignore and [c for c in ignore if code.startswith(c)]:
-                debug("error does fit in 'ignore' settings")
+                log("error does fit in 'ignore' settings")
                 continue
 
             # build error text
@@ -385,7 +466,7 @@ class Flake8LintCommand(sublime_plugin.TextCommand):
                                                     line_text)]
             # skip if this error is already found (with pep8 or flake8)
             if error in errors_to_show:
-                debug("skip error: already shown")
+                log("skip error: already shown")
                 continue
             errors_to_show.append(error)
 
@@ -394,7 +475,7 @@ class Flake8LintCommand(sublime_plugin.TextCommand):
                 errors_list_filtered.append(e)
 
             # prepare errors regions
-            if is_highlight or mark:
+            if is_highlight or gutter_mark:
                 # prepare line
                 line_text = full_line_text.rstrip('\r\n')
                 line_length = len(line_text)
@@ -409,30 +490,66 @@ class Flake8LintCommand(sublime_plugin.TextCommand):
                     start = text_point + e[1]
                 # TODO: add another tricks like 'E303 too many blank lines'
 
-                regions.append(sublime.Region(start, end))
+                if code[0] == 'F':
+                    regions_list = regions['critical']
+                elif code[0] == 'E':
+                    regions_list = regions['error']
+                else:
+                    regions_list = regions['warning']
+
+                regions_list.append(sublime.Region(start, end))
 
             # save errors for each line in view to special dict
             view_errors.setdefault(current_line, []).append(error_text)
 
         # renew errors list with selected and ignored errors
         self.errors_list = errors_list_filtered
+
         # save errors dict
         ERRORS_IN_VIEWS[self.view.id()] = view_errors
 
+        # this is fallback to default colors if our color scheme was not loaded
+        prefs = sublime.load_settings('Preferences.sublime-settings')
+        color_scheme = prefs.get('color_scheme')
+        if color_scheme and '(Flake8Lint)' in color_scheme:
+            scope_name = 'flake8lint.mark.{0}'
+        else:
+            log("use default colors because our color scheme was not loaded")
+            scope_name = 'invalid.deprecated'
+
         # highlight error regions if defined
         if is_highlight:
-            debug("highlight errors in view (regions)")
-            self.view.add_regions('flake8-errors', regions,
-                                  'invalid.deprecated', mark,
-                                  sublime.DRAW_OUTLINED)
-        elif mark:
-            debug("highlight errors in view (marks)")
-            self.view.add_regions('flake8-errors', regions,
-                                  'invalid.deprecated', mark,
-                                  sublime.HIDDEN)
+            for level in ERROR_LEVELS:
+                if not regions[level]:
+                    continue
+
+                log("highlight errors in view (regions: {0})".format(level))
+
+                self.view.add_regions(
+                    'flake8lint-{0}'.format(level),
+                    regions[level],
+                    scope_name.format(level),
+                    gutter_mark.format(level),
+                    sublime.DRAW_OUTLINED
+                )
+
+        elif gutter_mark:
+            for level in ERROR_LEVELS:
+                if not regions[level]:
+                    continue
+
+                log("highlight errors in view (marks: {0})".format(level))
+
+                self.view.add_regions(
+                    'flake8lint-{0}'.format(level),
+                    regions[level],
+                    scope_name.format('gutter'),
+                    gutter_mark.format(level),
+                    sublime.HIDDEN
+                )
 
         if is_popup:
-            debug("show popup window with errors")
+            log("show popup window with errors")
             # view errors window
             window = self.view.window()
             window.show_quick_panel(errors_to_show, self.error_selected)
@@ -442,9 +559,12 @@ class Flake8LintCommand(sublime_plugin.TextCommand):
         Error was selected - go to error.
         """
         if item_selected == -1:
-            debug("close errors popup window")
+            log("close errors popup window")
             return
-        debug("error was selected from popup window: scroll to line")
+        log("error was selected from popup window: scroll to line")
+
+        # focus view window
+        self.view.window().focus_view(self.view)
 
         # reset selection
         selection = self.view.sel()
@@ -462,74 +582,31 @@ class Flake8LintCommand(sublime_plugin.TextCommand):
 
 class Flake8LintBackground(sublime_plugin.EventListener):
     """
-    Listen to Siblime Text 2 events.
+    Listen to Siblime Text events.
     """
     def __init__(self, *args, **kwargs):
         super(Flake8LintBackground, self).__init__(*args, **kwargs)
         self._last_selected_line = None
 
-    def _view_is_preview(self, view):
-        """
-        Returns True if view is in preview mode (e.g. "Goto Anything").
-        """
-        window_views = (window_view.id()
-                        for window_view in sublime.active_window().views())
-        return bool(view.id() not in window_views)
-
-    def _lintOnLoad(self, view, retry=False):
-        """
-        Some code to lint file on load.
-        """
-        debug("try to lint file on load")
-        if not retry:  # first run - wait a little bit
-            sublime.set_timeout(lambda: self._lintOnLoad(view, True), 100)
-            return
-
-        if view.is_loading():  # view is still running - wait again
-            sublime.set_timeout(lambda: self._lintOnLoad(view, True), 100)
-            return
-
-        if view.window() is None:  # view window is not initialized - wait...
-            sublime.set_timeout(lambda: self._lintOnLoad(view, True), 100)
-            return
-
-        if view.window().active_view().id() != view.id():
-            debug("view is not active anymore, forget about lint")
-            return  # not active anymore, don't lint it!
-
-        if self._view_is_preview(view):
-            sublime.set_timeout(lambda: self._lintOnLoad(view, True), 300)
-            return  # wait before view will became normal
-
-        view.run_command("flake8_lint")
-
     def on_load(self, view):
         """
         Do lint on file load.
         """
-        if view.is_scratch():
-            debug("skip lint because view is scratch")
-            return  # do not lint scratch views
-
-        if settings.get('lint_on_load', False):
-            debug("run lint by 'on_load' hook")
-            self._lintOnLoad(view)
-        else:
-            debug("skip lint by 'on_load' hook due to plugin settings")
+        on_file_load(view)
 
     def on_post_save(self, view):
         """
         Do lint on file save.
         """
         if view.is_scratch():
-            debug("skip lint because view is scratch")
+            log("skip lint because view is scratch")
             return  # do not lint scratch views
 
         if settings.get('lint_on_save', True):
-            debug("run lint by 'on_post_save' hook")
+            log("run lint by 'on_post_save' hook")
             view.run_command('flake8_lint')
         else:
-            debug("skip lint by 'on_post_save' hook due to plugin settings")
+            log("skip lint by 'on_post_save' hook due to plugin settings")
 
     def on_selection_modified(self, view):
         """
@@ -547,5 +624,28 @@ class Flake8LintBackground(sublime_plugin.EventListener):
 
         elif current_line != self._last_selected_line:  # line was changed
             self._last_selected_line = current_line
-            debug("update statusbar")
+            log("update statusbar")
             update_statusbar(view)
+
+
+def plugin_loaded():
+    """
+    Load plugin settings when 'plugin was loaded' event appears.
+    """
+    global settings
+    global debug_enabled
+
+    settings = sublime.load_settings("Flake8Lint.sublime-settings")
+
+    if settings.get('debug', False):
+        debug_enabled = True
+        log("plugin was loaded")
+
+    update_color_scheme(settings)
+    on_file_load()
+
+
+# backwards compatibility with Sublime 2:
+# sublime.version isn't available at module import time in Sublime 3
+if sys.version_info[0] == 2:
+    plugin_loaded()

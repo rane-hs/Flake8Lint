@@ -1,7 +1,7 @@
 Python Flake8 Lint
 ==================
 
-Python Flake8 Lint is a Sublime Text 2/3 plugin for check Python files against some of the style conventions in **[PEP8](http://www.python.org/dev/peps/pep-0008/)**, **[PyFlakes](https://launchpad.net/pyflakes)** and **[mccabe](http://nedbatchelder.com/blog/200803/python_code_complexity_microtool.html)**.
+Python Flake8 Lint is a Sublime Text 2/3 plugin for check Python files against some of the style conventions in **[PEP8](http://www.python.org/dev/peps/pep-0008/)**, **[PyFlakes](https://launchpad.net/pyflakes)**, **[mccabe](http://nedbatchelder.com/blog/200803/python_code_complexity_microtool.html)** and **[pep8-naming](https://github.com/flintwork/pep8-naming)**.
 
 Based on **[bitbucket.org/tarek/flake8](https://bitbucket.org/tarek/flake8)**.
 
@@ -16,6 +16,8 @@ Lint tools
 * **[PyFlakes](https://launchpad.net/pyflakes)** checks only for logical errors in programs; it does not perform any check on style.
 
 * **[mccabe](http://nedbatchelder.com/blog/200803/python_code_complexity_microtool.html)** is a code complexity checker. It is quite useful to detect over-complex code. According to McCabe, anything that goes beyond 10 is too complex. See [Cyclomatic_complexity](https://en.wikipedia.org/wiki/Cyclomatic_complexity).
+
+* **[pep8-naming](https://github.com/flintwork/pep8-naming)** is a naming convention checker for Python.
 
 
 Install
@@ -55,15 +57,24 @@ Default "Python Flake8 Lint" plugin config: <kbd>Preferences</kbd>-><kbd>Package
 	// run flake8 lint on file loading
 	"lint_on_load": false,
 
+	// set ruler guide based on max line length setting
+	"set_ruler_guide": false,
+
 	// popup a dialog of detected conditions?
 	"popup": true,
 	// highlight detected conditions?
 	"highlight": true,
 
+	// color values to highlight detected conditions
+	"highlight_color_critical": "#981600",
+	"highlight_color_error": "#DA2000",
+	"highlight_color_warning": "#EDBA00",
+
 	// show a mark in the gutter on all lines with errors/warnings:
 	// - "dot", "circle" or "bookmark" to show marks
+	// - "theme-alpha", "theme-bright", "theme-dark", "theme-hard" or "theme-simple" to show icon marks
 	// - "" (empty string) to do not show marks
-	"gutter_marks": "",
+	"gutter_marks": "theme-simple",
 
 	// report successfull (passed) lint
 	"report_on_success": false,
@@ -74,7 +85,7 @@ Default "Python Flake8 Lint" plugin config: <kbd>Preferences</kbd>-><kbd>Package
 	"use_flake8_project_config": true,
 
 	// set python interpreter (lint files for python >= 2.7):
-	// - 'internal' for use internal Sublime Text 2 interpreter (2.6)
+	// - 'internal' for use internal Sublime Text interpreter (2.6)
 	// - 'auto' for search default system python interpreter (default value)
 	// - absolute path to python interpreter for define another one
 	//   use platform specific notation, i.e. "C:\\Anaconda\\envs\\py33\\python.exe"
@@ -88,6 +99,8 @@ Default "Python Flake8 Lint" plugin config: <kbd>Preferences</kbd>-><kbd>Package
 	"pyflakes": true,
 	// turn on pep8 error lint
 	"pep8": true,
+	// turn on naming error lint
+	"naming": true,
 	// turn off complexity check (set number > 0 to check complexity level)
 	"complexity": -1,
 
@@ -149,6 +162,7 @@ You could define per-project config for "Python Flake8 Lint". Use <kbd>Project</
 			"builtins": [],
 			"pyflakes": true,
 			"pep8": true,
+			"naming": true,
 			"complexity": -1,
 			"pep8_max_line_length": 79,
 			"select": [],
@@ -175,7 +189,7 @@ Features / Usage
 
 Automatically check Python files with flake8 lint tool and show window with error list:
 
-[![Error list](http://habrastorage.org/storage2/5ac/5f2/ded/5ac5f2ded857d962d1ca78da087a65f7.png)](http://habrastorage.org/storage2/5ac/5f2/ded/5ac5f2ded857d962d1ca78da087a65f7.png)
+[![Error list](http://habrastorage.org/files/c24/bad/d90/c24badd902b542f292be3f11c8542dc6.png)](http://habrastorage.org/files/c24/bad/d90/c24badd902b542f292be3f11c8542dc6.png)
 
 And move to error line/char on select.
 

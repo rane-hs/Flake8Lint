@@ -15,10 +15,11 @@ except ImportError:
 # and it's dependencies: 'pyflake', 'pep8' and 'mccabe'
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'contrib'))
 
-
-import pyflakes.api
+import ast
 import mccabe
 import pep8
+import pep8ext_naming
+import pyflakes.api
 from pep8 import readlines
 from flake8.engine import _flake8_noqa
 
@@ -89,13 +90,13 @@ class FlakesReporter(object):
         # errors "collection"
         self.errors = []
 
-    def unexpectedError(self, filename, msg):
+    def unexpectedError(self, filename, msg):  # noqa
         """
         An unexpected error occurred trying to process filename.
         """
         self.errors.append((0, 0, msg))
 
-    def syntaxError(self, filename, msg, lineno, offset, text):
+    def syntaxError(self, filename, msg, lineno, offset, text):  # noqa
         """
         There was a syntax errror in filename.
         """
@@ -146,6 +147,8 @@ def load_flake8_config(filename, global_config=False, project_config=False):
             ('max_line_length', 'pep8_max_line_length', 'int')
         )
         for config, plugin, option_type in options:
+            if not parser.has_option('flake8', config):
+                config = config.replace('_', '-')
             if parser.has_option('flake8', config):
                 if option_type == 'list':
                     option_value = parser.get('flake8', config).strip()
@@ -191,6 +194,30 @@ def lint(filename, settings):
         pep8style.input_file(filename)
         warnings.extend(pep8style.options.report.errors)
 
+    # lint with naming
+    if settings.get('naming', True):
+        with open(filename, "rU") as f:
+            lines = f.read()
+        try:
+            tree = compile(lines, '', 'exec', ast.PyCF_ONLY_AST)
+        except (SyntaxError, TypeError):
+            (exc_type, exc) = sys.exc_info()[:2]
+            if len(exc.args) > 1:
+                offset = exc.args[1]
+                if len(offset) > 2:
+                    offset = offset[1:3]
+            else:
+                offset = (1, 0)
+            warnings.append((
+                offset[0],
+                offset[1] or 0,
+                'E901 %s: %s' % (exc_type.__name__, exc.args[0])
+            ))
+        else:
+            checker = pep8ext_naming.NamingChecker(tree, filename)
+            for lineno, col_offset, msg, __ in checker.run():
+                warnings.append((lineno, col_offset, msg))
+
     # check complexity
     try:
         complexity = int(settings.get('complexity', -1))
@@ -230,6 +257,10 @@ def lint_external(filename, settings, interpreter, linter):
         max_line_length = settings.get('pep8_max_line_length', 79)
         arguments.append('--pep8-max-line-length')
         arguments.append(str(max_line_length))
+
+    # do we need to run naming lint
+    if settings.get('naming', True):
+        arguments.append('--naming')
 
     # do we need to run complexity check
     complexity = settings.get('complexity', -1)
@@ -278,6 +309,8 @@ if __name__ == "__main__":
     parser.add_argument('--builtins', help="python builtins extend")
     parser.add_argument('--pep8', action='store_true',
                         help="run pep8 lint")
+    parser.add_argument('--naming', action='store_true',
+                        help="run naming lint")
     parser.add_argument('--complexity', type=int, help="check complexity")
     parser.add_argument('--pep8-max-line-length', type=int, default=79,
                         help="pep8 max line length")
